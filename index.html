@@ -1,0 +1,403 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Chat Explorer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            text-align: center;
+        }
+        h1 {
+            text-align: center;
+        }
+        #upload-section {
+            margin-bottom: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .error {
+            color: red;
+        }
+        button {
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        .clickable {
+            cursor: pointer;
+            color: blue;
+            text-decoration: underline;
+        }
+        .clickable:hover {
+            color: darkblue;
+        }
+        #top-users-section {
+            margin-bottom: 20px;
+        }
+        caption {
+            text-align: left;
+            padding: 8px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>WhatsApp Chat Explorer</h1>
+    <p>by Ikbal Maulana @2025</p>
+    <div id="upload-section">
+        <input type="file" id="chatFile" accept=".txt">
+        <button onclick="convertChat()">Convert to Table</button>
+        <button onclick="downloadCSV()" id="csvButton" disabled>Download as CSV</button>
+        <button onclick="showTopUsers()" id="topUsersButton" disabled>Top Authors</button>
+        <label for="topN">Show top:</label>
+        <input type="number" id="topN" value="10" min="1" style="width: 60px;">
+    </div>
+    <div id="error" class="error"></div>
+    <div id="main-content">
+        <table id="chatTable">
+            <caption>Full Conversation Table</caption>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Date</th>
+                    <th>Author</th>
+                    <th>Text</th>
+                </tr>
+            </thead>
+            <tbody id="chatBody"></tbody>
+        </table>
+    </div>
+
+    <script>
+        let messages = []; // Store messages globally for CSV export and top users
+        let currentView = 'main'; // Track current view: 'main', 'topUsers', or 'authorMessages'
+        let currentAuthor = ''; // Track the current author for CSV export
+
+        function parseWhatsAppChat(text) {
+            messages = [];
+            // Combine all lines into a single text block
+            const fullText = text.replace(/\r\n/g, '\n'); // Normalize line breaks
+            // Split by timestamp pattern
+            const timestampRegex = /\[(\d{2}\/\d{2}\/\d{2} \d{2}\.\d{2}\.\d{2})\]/g;
+            const messageParts = fullText.split(timestampRegex);
+            
+            // The split result alternates between non-timestamp text and timestamps
+            // messageParts[0] is before the first timestamp (often empty or metadata)
+            // messageParts[1] is first timestamp, messageParts[2] is first message, etc.
+            for (let i = 1; i < messageParts.length; i += 2) {
+                const timestamp = messageParts[i];
+                const messageContent = messageParts[i + 1] ? messageParts[i + 1].trim() : '';
+                if (!messageContent) continue;
+
+                // Parse the message content
+                const messageMatch = messageContent.match(/^(.*?): (.*)$/s);
+                if (messageMatch) {
+                    const [, author, text] = messageMatch;
+                    const [date, time] = timestamp.split(' ');
+                    messages.push({
+                        time: timestamp,
+                        date: date,
+                        author: author.trim(),
+                        text: text.trim()
+                    });
+                }
+                // Skip messages that don't match the expected format (e.g., system messages)
+            }
+
+            return messages;
+        }
+
+        function displayTable(messages) {
+            const mainContent = document.getElementById('main-content');
+            mainContent.innerHTML = `
+                <table id="chatTable">
+                    <caption>Full Conversation Table</caption>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Date</th>
+                            <th>Author</th>
+                            <th>Text</th>
+                        </tr>
+                    </thead>
+                    <tbody id="chatBody"></tbody>
+                </table>
+            `;
+
+            const tbody = document.getElementById('chatBody');
+            messages.forEach(msg => {
+                const row = document.createElement('tr');
+                // Escape HTML characters in text to prevent rendering issues
+                const escapedText = msg.text.replace(/</g, '<').replace(/>/g, '>').replace(/\n/g, '<br>');
+                row.innerHTML = `
+                    <td>${msg.time}</td>
+                    <td>${msg.date}</td>
+                    <td>${msg.author}</td>
+                    <td>${escapedText}</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            // Enable buttons if messages exist
+            document.getElementById('csvButton').disabled = messages.length === 0;
+            document.getElementById('topUsersButton').disabled = messages.length === 0;
+            currentView = 'main';
+        }
+
+        function convertChat() {
+            const fileInput = document.getElementById('chatFile');
+            const errorDiv = document.getElementById('error');
+
+            if (!fileInput.files.length) {
+                errorDiv.textContent = 'Please select a file.';
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onload = function(e) {
+                try {
+                    const text = e.target.result;
+                    const parsedMessages = parseWhatsAppChat(text);
+                    displayTable(parsedMessages);
+                    errorDiv.textContent = '';
+                } catch (err) {
+                    errorDiv.textContent = 'Error processing file: ' + err.message;
+                }
+            };
+
+            reader.onerror = function() {
+                errorDiv.textContent = 'Error reading file.';
+            };
+
+            reader.readAsText(file);
+        }
+
+        function downloadCSV() {
+            if (messages.length === 0) {
+                document.getElementById('error').textContent = 'No data to download.';
+                return;
+            }
+
+            let csvContent, filename;
+            const escapeCSV = (str) => `"${str.replace(/"/g, '""').replace(/\n/g, ' ')}"`; // Escape quotes and replace newlines
+
+            if (currentView === 'topUsers') {
+                const topN = parseInt(document.getElementById('topN').value) || 10;
+                const authorCounts = messages.reduce((acc, msg) => {
+                    acc[msg.author] = (acc[msg.author] || 0) + 1;
+                    return acc;
+                }, {});
+                const sortedAuthors = Object.entries(authorCounts)
+                    .map(([author, count]) => ({ author, count }))
+                    .sort((a, b) => b.count - a.count);
+                const topNAuthors = sortedAuthors.slice(0, topN);
+                const othersCount = sortedAuthors.slice(topN).reduce((sum, { count }) => sum + count, 0);
+
+                const headers = ['No.', 'Author', 'Number of Texts'];
+                const csvRows = [
+                    headers.map(escapeCSV).join(','),
+                    ...topNAuthors.map(({ author, count }, index) =>
+                        [index + 1, escapeCSV(author), count].join(',')
+                    )
+                ];
+                if (othersCount > 0) {
+                    csvRows.push(['', escapeCSV('Others'), othersCount].join(','));
+                }
+                csvContent = csvRows.join('\n');
+                filename = 'top_authors.csv';
+            } else if (currentView === 'authorMessages') {
+                const authorMessages = messages.filter(msg => msg.author === currentAuthor);
+                const headers = ['Date', 'Text'];
+                const csvRows = [
+                    headers.map(escapeCSV).join(','),
+                    ...authorMessages.map(msg =>
+                        [
+                            escapeCSV(msg.date),
+                            escapeCSV(msg.text)
+                        ].join(',')
+                    )
+                ];
+                csvContent = csvRows.join('\n');
+                filename = `texting_of_${currentAuthor.replace(/\s+/g, '_').toLowerCase()}.csv`;
+            } else {
+                const headers = ['Time', 'Date', 'Author', 'Text'];
+                const csvRows = [
+                    headers.map(escapeCSV).join(','),
+                    ...messages.map(msg =>
+                        [
+                            escapeCSV(msg.time),
+                            escapeCSV(msg.date),
+                            escapeCSV(msg.author),
+                            escapeCSV(msg.text)
+                        ].join(',')
+                    )
+                ];
+                csvContent = csvRows.join('\n');
+                filename = 'whatsapp_chat.csv';
+            }
+
+            // Create and trigger download
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function showTopUsers() {
+            const topN = parseInt(document.getElementById('topN').value) || 10;
+            if (topN < 1) {
+                document.getElementById('error').textContent = 'Please enter a number greater than 0.';
+                return;
+            }
+
+            // Count messages per author
+            const authorCounts = messages.reduce((acc, msg) => {
+                acc[msg.author] = (acc[msg.author] || 0) + 1;
+                return acc;
+            }, {});
+
+            // Convert to array and sort by count descending
+            const sortedAuthors = Object.entries(authorCounts)
+                .map(([author, count]) => ({ author, count }))
+                .sort((a, b) => b.count - a.count);
+
+            // Calculate total texts for "Others"
+            const topNAuthors = sortedAuthors.slice(0, topN);
+            const othersCount = sortedAuthors.slice(topN).reduce((sum, { count }) => sum + count, 0);
+
+            // Display top users table with back button
+            const mainContent = document.getElementById('main-content');
+            mainContent.innerHTML = `
+                <button onclick="displayTable(messages)">Back to Full Conversation Table</button>
+                <table id="topUsersTable">
+                    <caption>Top ${topN} Authors</caption>
+                    <thead>
+                        <tr>
+                            <th>No.</th>
+                            <th>Author</th>
+                            <th>Number of Texts</th>
+                        </tr>
+                    </thead>
+                    <tbody id="topUsersBody"></tbody>
+                </table>
+            `;
+
+            const tbody = document.getElementById('topUsersBody');
+            topNAuthors.forEach(({ author, count }, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${index + 1}</td>
+                    <td class="clickable" onclick="showAuthorMessages('${author.replace(/'/g, "\\'")}')">${author}</td>
+                    <td>${count}</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            // Add "Others" row (non-clickable)
+            if (othersCount > 0) {
+                const othersRow = document.createElement('tr');
+                othersRow.innerHTML = `
+                    <td></td>
+                    <td>Others</td>
+                    <td>${othersCount}</td>
+                `;
+                tbody.appendChild(othersRow);
+            }
+
+            currentView = 'topUsers';
+        }
+
+        function showAuthorMessages(author) {
+            currentAuthor = author; // Store the current author for CSV export
+            const authorMessages = messages.filter(msg => msg.author === author);
+            const mainContent = document.getElementById('main-content');
+            mainContent.innerHTML = `
+                <button onclick="displayTable(messages)">Back to Full Conversation Table</button>
+                <button onclick="showTopUsers()">Back to Top ${document.getElementById('topN').value} Authors Table</button>
+                <table id="authorMessagesTable">
+                    <caption>The Texting of ${author}</caption>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Text</th>
+                        </tr>
+                    </thead>
+                    <tbody id="authorMessagesBody"></tbody>
+                </table>
+            `;
+
+            const tbody = document.getElementById('authorMessagesBody');
+            authorMessages.forEach(msg => {
+                const row = document.createElement('tr');
+                const escapedText = msg.text.replace(/</g, '<').replace(/>/g, '>').replace(/\n/g, '<br>');
+                row.innerHTML = `
+                    <td>${msg.date}</td>
+                    <td>${escapedText}</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            currentView = 'authorMessages';
+        }
+    </script>
+</body>
+</html>
